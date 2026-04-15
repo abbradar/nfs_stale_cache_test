@@ -30,16 +30,16 @@
  *     → copies stale zeroes from
  *       folio up to new_size
  *
- * Strategy: read only the page straddling EOF so we exercise exactly
- * the folio that contains the stale zero-fill.  The stat-hammer
- * threads force GETATTR RPCs that update i_size between our
- * filemap_get_read_batch and i_size_read.
+ * Strategy: each reader thread reads the file sequentially one byte at
+ * a time.  When read() returns 0 (EOF), it retries — the file is still
+ * growing on the server.  Any 0x00 byte is stale page-cache data.
+ * The stat-hammer threads force GETATTR RPCs that update i_size
+ * between filemap_get_read_batch and i_size_read.
  */
 
 #define FILL_BYTE    0xAA
 #define READ_THREADS 16
 #define STAT_THREADS 4
-#define PAGE_SIZE    4096
 
 static volatile sig_atomic_t stop;
 static const char *filepath;
@@ -65,65 +65,39 @@ static void *read_thread(void *arg)
 	struct reader_arg *ra = arg;
 	int id = ra->id;
 	int fd = ra->fd;
-	unsigned char buf[PAGE_SIZE];
+	unsigned char byte;
 	unsigned long checks = 0, hits = 0;
+	off_t offset = 0;
 
 	while (!stop) {
-		struct stat st;
-
-		if (fstat(fd, &st) < 0)
+		ssize_t n = read(fd, &byte, 1);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("read");
+			break;
+		}
+		if (n == 0) {
+			/* EOF — file hasn't grown yet, retry */
 			continue;
-
-		off_t sz = st.st_size;
-		if (sz <= 0)
-			continue;
-
-		/*
-		 * Read only the page straddling EOF.  This is the page
-		 * that contains zero-fill beyond the old EOF — exactly
-		 * the data that becomes stale when i_size grows.
-		 */
-		off_t page_start = (sz - 1) & ~((off_t)PAGE_SIZE - 1);
-		ssize_t n = pread(fd, buf, PAGE_SIZE, page_start);
-		if (n <= 0)
-			continue;
+		}
 
 		checks++;
 
-		/*
-		 * Only check bytes within [page_start, sz).  Bytes
-		 * beyond sz are legitimately zero (beyond EOF).
-		 * But bytes in [page_start, sz) must all be FILL_BYTE.
-		 */
-		off_t valid = sz - page_start;
-		if (valid > n)
-			valid = n;
-
-		for (ssize_t i = 0; i < valid; i++) {
-			if (buf[i] == 0x00) {
-				struct timespec now;
-				clock_gettime(CLOCK_MONOTONIC, &now);
-				fprintf(stderr,
-					"[%ld.%03ld] reader %d: STALE ZERO at "
-					"file offset %zd (page +%zd) "
-					"sz=%lld n=%zd\n",
-					(long)now.tv_sec,
-					now.tv_nsec / 1000000,
-					id,
-					(ssize_t)(page_start + i), i,
-					(long long)sz, n);
-				hits++;
-				break;  /* one hit per read is enough */
-			}
+		if (byte == 0x00) {
+			struct timespec now;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			fprintf(stderr,
+				"[%ld.%03ld] reader %d: STALE ZERO at "
+				"offset %lld\n",
+				(long)now.tv_sec,
+				now.tv_nsec / 1000000,
+				id,
+				(long long)offset);
+			hits++;
 		}
 
-		/*
-		 * Yield briefly to give the scheduler a chance to
-		 * interleave an attribute update between our
-		 * filemap_get_read_batch and i_size_read in the
-		 * next iteration's pread.
-		 */
-		usleep(1);
+		offset++;
 	}
 
 	fprintf(stderr, "reader %d: %lu checks, %lu stale hits\n",

@@ -42,7 +42,6 @@ int main(int argc, char *argv[])
 			close(fd);
 			return 1;
 		}
-		fdatasync(fd);
 	}
 
 	close(fd);
