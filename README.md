@@ -106,3 +106,26 @@ reader 14: 6704 checks, 2 stale hits
 
 Bug reproduced: 37 stale-zero hit(s)
 ```
+
+## Possible explanation
+
+When a file grows remotely, the page before the old EOF in the read cache contains zero-fill beyond the old size. Those zeroes are valid while new size <= old size (they are beyond EOF), but become stale once the new size is updated to reflect the remote growth: the remote host wrote real data there, but the local cache still has the old zero-fill.
+
+In filemap_read() (mm/filemap.c) we have:
+
+```
+do {
+    ...
+    error = filemap_get_pages(iocb, ...);  // (1) get cached folios
+    ...
+    isize = i_size_read(inode);            // (2) get file size
+    ...
+    // (3) copy from folio to user, capped at isize
+} while (...);
+```
+
+If we grow the inode size in-between (1) and (2), the race happens; the old page gets capped at the new size, so the userspace reads zeroes where there should be actual data.
+
+To trigger this bug, something must change the inode size in parallel with a read and not come from a user's `write()` since writes are coherent with reads via the cache layer. In a network FS this may happen on getattr when we discover that the remote file has grown, and update the inode's size. When this happens we need to mark the cache pages as stale, but there is no way to "lock" the page and the inode size simultaneously, so the race cannot be fixed just by stalling the cache in getattr.
+
+NFS does stall the cache already — it sets NFS_INO_INVALID_DATA, then before we read invalidates the cache as needed. However the window between (1) and (2) is still there.
