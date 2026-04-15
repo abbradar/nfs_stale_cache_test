@@ -21,7 +21,7 @@ Any issues found here are mine to blame on.
 
 ```
 $ sudo modprobe nfsv4
-$ ./run-test.sh s00  # run for 300 seconds
+$ ./run-test.sh 300  # run for 300 seconds
 ```
 
 ## The writer
