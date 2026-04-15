@@ -1,0 +1,18 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        nfs-kernel-server gcc libc6-dev make && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /export && \
+    echo '/export *(rw,sync,no_subtree_check,no_root_squash,fsid=0)' \
+        >> /etc/exports
+
+COPY writer.c Makefile /build/
+RUN make -C /build writer && cp /build/writer /usr/local/bin/
+
+# Start NFS server, then run the writer
+COPY start-server.sh /start-server.sh
+RUN chmod +x /start-server.sh
+CMD ["/start-server.sh"]

@@ -1,0 +1,28 @@
+services:
+  nfs-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    privileged: true
+    volumes:
+      - export-data:/export
+    networks:
+      - testnet
+
+  nfs-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    privileged: true
+    depends_on:
+      - nfs-server
+    networks:
+      - testnet
+    # Keep container alive; run-test.sh drives it
+    command: ["sleep", "infinity"]
+
+volumes:
+  export-data:
+
+networks:
+  testnet:

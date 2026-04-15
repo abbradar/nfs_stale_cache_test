@@ -1,0 +1,11 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        nfs-common gcc libc6-dev make && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY reader.c Makefile /build/
+RUN make -C /build reader && cp /build/reader /usr/local/bin/
+
+RUN mkdir -p /mnt/nfs
